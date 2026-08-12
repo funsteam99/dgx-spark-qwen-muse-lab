@@ -48,6 +48,7 @@ async function send(side, override=null){
     const data=await res.json(); if(!res.ok) throw new Error(data?.error?.message||data?.error||`HTTP ${res.status}`);
     const msg=data.choices?.[0]?.message||{}; const answer=msg.content||''; const reasoning=msg.reasoning||msg.reasoning_content||'';
     bubble.innerHTML=(reasoning?`<details class="thinking"><summary>推理過程</summary>${renderText(reasoning)}</details>`:'')+renderText(answer||'（沒有文字輸出）');
+    $('.messages',lane).scrollTop=$('.messages',lane).scrollHeight;
     s.history.push({role:'assistant',content:answer});
     const elapsed=(performance.now()-started)/1000, tokens=data.usage?.completion_tokens, serverTps=data.timings?.predicted_per_second;
     const metric=serverTps?`${serverTps.toFixed(1)} tok/s · ${elapsed.toFixed(1)}s`:`${tokens??'—'} tokens · ${elapsed.toFixed(1)}s`;
