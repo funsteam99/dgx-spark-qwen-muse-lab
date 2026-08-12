@@ -70,6 +70,8 @@ Open `http://<spark-ip>:8005`.
 
 Features include independent histories, individual or synchronized prompts, a selectable 512–8192 output-token limit (4096 default), drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, a mobile layout, and safe Markdown rendering for headings, emphasis, lists, quotes, code, links and tables. Browser-decodable formats such as WebP are normalized to model-compatible JPEG before transmission; JPEG and PNG remain unchanged.
 
+Qwen requests use a conservative `repetition_penalty` of 1.08. Splitframe also detects pathological consecutive repetition, folds duplicate runs in the display, and marks the response metric as `REPETITION`; ordinary output-limit truncation is marked as `LIMIT`.
+
 ## Reproduce the comparison
 
 1. Confirm `/api/health` reports both models as `true`.

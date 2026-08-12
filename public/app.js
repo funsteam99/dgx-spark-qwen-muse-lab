@@ -1,5 +1,5 @@
 const configs = {
-  qwen: { model: "nvidia/Qwen3.6-35B-A3B-NVFP4", thinkingOff: true },
+  qwen: { model: "nvidia/Qwen3.6-35B-A3B-NVFP4", thinkingOff: true, repetitionPenalty: 1.08 },
   muse: { model: "muse-glimmer-30B" }
 };
 const state = Object.fromEntries(Object.keys(configs).map(side => [side, { history: [], images: [], busy: false, controller: null }]));
@@ -54,6 +54,17 @@ function renderText(text=''){
   if(code)html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
   closeList(); return html.join('');
 }
+function collapseDegenerateRepetition(text=''){
+  const normalized=String(text), minChunk=8, maxChunk=160;
+  for(let size=Math.min(maxChunk,Math.floor(normalized.length/4));size>=minChunk;size--){
+    for(let start=Math.max(0,normalized.length-size*12);start<=normalized.length-size*4;start++){
+      const chunk=normalized.slice(start,start+size); if(!chunk.trim()||/^\s+$/.test(chunk))continue;
+      let count=1,pos=start+size; while(normalized.slice(pos,pos+size)===chunk){count++;pos+=size;}
+      if(count>=4)return {text:normalized.slice(0,start)+chunk.repeat(2)+`\n\n[已折疊 ${count-2} 次重複內容]`,detected:true,count,chunk};
+    }
+  }
+  return {text:normalized,detected:false};
+}
 
 function readDataUrl(file){
   return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
@@ -105,14 +116,16 @@ async function send(side, override=null){
     s.controller=new AbortController();
     const body={model:configs[side].model,messages:s.history,max_tokens:Number($('#maxTokens').value),temperature:0.7,stream:false};
     if(configs[side].thinkingOff) body.chat_template_kwargs={enable_thinking:false};
+    if(configs[side].repetitionPenalty) body.repetition_penalty=configs[side].repetitionPenalty;
     const res=await fetch(`/api/${side}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:s.controller.signal});
     const data=await res.json(); if(!res.ok) throw new Error(data?.error?.message||data?.error||`HTTP ${res.status}`);
-    const msg=data.choices?.[0]?.message||{}; const answer=msg.content||''; const reasoning=msg.reasoning||msg.reasoning_content||'';
-    bubble.innerHTML=(reasoning?`<details class="thinking"><summary>推理過程</summary>${renderText(reasoning)}</details>`:'')+renderText(answer||'（沒有文字輸出）');
+    const msg=data.choices?.[0]?.message||{}; const answer=msg.content||''; const reasoning=msg.reasoning||msg.reasoning_content||''; const cleaned=collapseDegenerateRepetition(answer);
+    bubble.innerHTML=(cleaned.detected?'<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>':'')+(reasoning?`<details class="thinking"><summary>推理過程</summary>${renderText(reasoning)}</details>`:'')+renderText(cleaned.text||'（沒有文字輸出）');
     $('.messages',lane).scrollTop=$('.messages',lane).scrollHeight;
     s.history.push({role:'assistant',content:answer});
     const elapsed=(performance.now()-started)/1000, tokens=data.usage?.completion_tokens, serverTps=data.timings?.predicted_per_second;
-    const metric=serverTps?`${serverTps.toFixed(1)} tok/s · ${elapsed.toFixed(1)}s`:`${tokens??'—'} tokens · ${elapsed.toFixed(1)}s`;
+    const finish=data.choices?.[0]?.finish_reason, suffix=cleaned.detected?' · REPETITION':finish==='length'?' · LIMIT':'';
+    const metric=(serverTps?`${serverTps.toFixed(1)} tok/s · ${elapsed.toFixed(1)}s`:`${tokens??'—'} tokens · ${elapsed.toFixed(1)}s`)+suffix;
     $('.last-metric',lane).textContent=metric; $('.meta',pending).textContent=`MODEL · ${metric}`;
   }catch(e){ bubble.textContent=e.name==='AbortError'?'已停止生成':`錯誤：${e.message}`; pending.classList.add('error'); }
   finally{s.busy=false;s.controller=null;$('.send',lane).disabled=false;}
