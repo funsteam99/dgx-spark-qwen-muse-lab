@@ -68,7 +68,7 @@ docker run -d \
 
 Open `http://<spark-ip>:8005`.
 
-Features include independent histories, individual or synchronized prompts, drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, and a mobile layout.
+Features include independent histories, individual or synchronized prompts, drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, and a mobile layout. Browser-decodable formats such as WebP are normalized to model-compatible JPEG before transmission; JPEG and PNG remain unchanged.
 
 ## Reproduce the comparison
 

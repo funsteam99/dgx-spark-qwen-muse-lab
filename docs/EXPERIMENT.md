@@ -83,3 +83,7 @@ Passing `-md` loads the draft model, but llama.cpp defaults `--spec-type` to `no
 ## Security
 
 The experiment used host networking and no API keys. Bind these services only on a trusted LAN or place an authenticated reverse proxy in front of them.
+
+## WebP compatibility note
+
+The llama.cpp multimodal loader used here rejected a raw WebP data URL with `Failed to load image or audio file`. Splitframe now converts browser-decodable formats such as WebP to high-quality JPEG client-side (maximum edge 2048 px) before sending them. A 1000×1000 WebP regression test was successfully described by Muse after conversion.

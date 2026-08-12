@@ -10,15 +10,31 @@ function toast(text){ const el=$('#toast'); el.textContent=text; el.classList.ad
 function escapeHtml(s=''){ return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function renderText(text=''){ return escapeHtml(text).replace(/```([\s\S]*?)```/g,'<pre><code>$1</code></pre>').replace(/\n/g,'<br>'); }
 
+function readDataUrl(file){
+  return new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve(r.result); r.onerror=reject; r.readAsDataURL(file); });
+}
+async function normalizeImage(file){
+  if(['image/jpeg','image/png'].includes(file.type)) return {name:file.name,url:await readDataUrl(file)};
+  let bitmap;
+  try{ bitmap=await createImageBitmap(file,{imageOrientation:'from-image'}); }
+  catch{ throw new Error(`${file.name} 無法解碼，請改用 JPEG、PNG 或 WebP`); }
+  const maxEdge=2048, scale=Math.min(1,maxEdge/Math.max(bitmap.width,bitmap.height));
+  const canvas=document.createElement('canvas'); canvas.width=Math.max(1,Math.round(bitmap.width*scale)); canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+  const ctx=canvas.getContext('2d'); ctx.fillStyle='#f7f4ec'; ctx.fillRect(0,0,canvas.width,canvas.height); ctx.drawImage(bitmap,0,0,canvas.width,canvas.height); bitmap.close?.();
+  return {name:file.name,url:canvas.toDataURL('image/jpeg',0.92),converted:true};
+}
 async function filesToImages(files){
   const valid=[...files].filter(f=>f.type.startsWith('image/'));
-  return Promise.all(valid.map(file=>new Promise((resolve,reject)=>{ const r=new FileReader(); r.onload=()=>resolve({name:file.name,url:r.result}); r.onerror=reject; r.readAsDataURL(file); })));
+  return Promise.all(valid.map(normalizeImage));
 }
 function renderPreviews(side){
   const box=$('.previews',lanes[side]); box.innerHTML=state[side].images.map((im,i)=>`<div class="preview"><img src="${im.url}" alt="${escapeHtml(im.name)}"><button data-remove="${i}" aria-label="移除圖片">×</button></div>`).join('');
   box.querySelectorAll('[data-remove]').forEach(b=>b.onclick=()=>{state[side].images.splice(+b.dataset.remove,1);renderPreviews(side)});
 }
-async function addFiles(side, files){ const added=await filesToImages(files); state[side].images.push(...added); renderPreviews(side); }
+async function addFiles(side, files){
+  try{ const added=await filesToImages(files); state[side].images.push(...added); renderPreviews(side); if(added.some(i=>i.converted))toast('已自動轉成模型相容的 JPEG'); }
+  catch(error){ toast(error.message); }
+}
 
 function addMessage(side, role, text, images=[], reasoning=''){
   const box=$('.messages',lanes[side]); $('.empty',box)?.remove();
