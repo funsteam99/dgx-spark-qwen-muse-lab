@@ -103,7 +103,7 @@ async function send(side, override=null){
   const pending=addMessage(side,'assistant','思考中…'); const bubble=$('.bubble',pending); const started=performance.now();
   try{
     s.controller=new AbortController();
-    const body={model:configs[side].model,messages:s.history,max_tokens:1024,temperature:0.7,stream:false};
+    const body={model:configs[side].model,messages:s.history,max_tokens:Number($('#maxTokens').value),temperature:0.7,stream:false};
     if(configs[side].thinkingOff) body.chat_template_kwargs={enable_thinking:false};
     const res=await fetch(`/api/${side}/chat`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body),signal:s.controller.signal});
     const data=await res.json(); if(!res.ok) throw new Error(data?.error?.message||data?.error||`HTTP ${res.status}`);

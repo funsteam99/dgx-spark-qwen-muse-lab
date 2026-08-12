@@ -68,7 +68,7 @@ docker run -d \
 
 Open `http://<spark-ip>:8005`.
 
-Features include independent histories, individual or synchronized prompts, drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, a mobile layout, and safe Markdown rendering for headings, emphasis, lists, quotes, code, links and tables. Browser-decodable formats such as WebP are normalized to model-compatible JPEG before transmission; JPEG and PNG remain unchanged.
+Features include independent histories, individual or synchronized prompts, a selectable 512–8192 output-token limit (4096 default), drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, a mobile layout, and safe Markdown rendering for headings, emphasis, lists, quotes, code, links and tables. Browser-decodable formats such as WebP are normalized to model-compatible JPEG before transmission; JPEG and PNG remain unchanged.
 
 ## Reproduce the comparison
 
