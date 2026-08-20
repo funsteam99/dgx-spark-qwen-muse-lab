@@ -4,6 +4,14 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 
+// Prevent unhandled promise rejections from crashing the server
+process.on("unhandledRejection", (reason) => {
+  console.error("[UnhandledRejection]", reason?.message || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[UncaughtException]", err?.message || err);
+});
+
 const root = join(fileURLToPath(new URL(".", import.meta.url)), "public");
 const port = Number(process.env.PORT || 8005);
 const targets = {
@@ -114,18 +122,19 @@ function log(msg) {
 }
 
 function json(res, status, body) {
+  if (res.writableEnded) return;
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(body));
 }
 
-function runPythonSnippet(code, timeoutMs = 10000) {
+function runPythonSnippet(code, timeoutMs = 15000) {
   return new Promise((resolve) => {
     const py = spawn("python3", ["-c", code]);
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
       py.kill("SIGKILL");
-      resolve({ success: false, output: "Execution timed out (10s)" });
+      resolve({ success: false, output: "Execution timed out (15s)" });
     }, timeoutMs);
 
     py.stdout.on("data", (d) => (stdout += d.toString()));
@@ -157,7 +166,6 @@ async function executeTool(modelKey, name, args) {
     if (!skill_name || !python_code) {
       return JSON.stringify({ error: "Missing skill_name or python_code" });
     }
-    // Test compile the python code
     const testCode = `${python_code}\nimport inspect\nassert "${skill_name}" in globals(), "Main function '${skill_name}' not defined"\nprint("VALID_SKILL")\n`;
     const testRes = await runPythonSnippet(testCode);
     if (!testRes.success || !testRes.output.includes("VALID_SKILL")) {
@@ -167,7 +175,6 @@ async function executeTool(modelKey, name, args) {
       });
     }
 
-    // Save to model's isolated dynamic skills registry
     mySkills.set(skill_name, {
       name: skill_name,
       model: modelKey,
@@ -196,7 +203,7 @@ async function executeTool(modelKey, name, args) {
   if (name === "web_search") {
     const q = encodeURIComponent(args.query || "");
     try {
-      const resp = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_html=1&skip_disambig=1`, { signal: AbortSignal.timeout(5000) });
+      const resp = await fetch(`https://api.duckduckgo.com/?q=${q}&format=json&no_html=1&skip_disambig=1`, { signal: AbortSignal.timeout(8000) });
       const data = await resp.json();
       const abstract = data.AbstractText || "";
       const related = (data.RelatedTopics || []).slice(0, 3).map(r => r.Text).filter(Boolean);
@@ -210,7 +217,6 @@ async function executeTool(modelKey, name, args) {
     }
   }
 
-  // Check model's isolated custom skills
   if (mySkills.has(name)) {
     const skill = mySkills.get(name);
     const runnerCode = `
@@ -246,8 +252,12 @@ async function proxyAgent(req, res, modelKey, parsed) {
     "x-accel-buffering": "no"
   });
 
+  let clientDisconnected = false;
+  req.on("close", () => { clientDisconnected = true; });
+
   const sendSSE = (obj) => {
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    if (clientDisconnected || res.writableEnded) return;
+    try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch {}
   };
 
   const messages = [...(parsed.messages || [])];
@@ -273,7 +283,7 @@ async function proxyAgent(req, res, modelKey, parsed) {
 
   log(`[AGENT-START][${modelKey}] agent loop initiated (max_turns=${maxTurns}, active_skills=${mySkills.size})`);
 
-  while (turn < maxTurns && !isDone) {
+  while (turn < maxTurns && !isDone && !clientDisconnected) {
     turn++;
     log(`[AGENT-TURN][${modelKey}] Turn ${turn}/${maxTurns}`);
 
@@ -294,9 +304,10 @@ async function proxyAgent(req, res, modelKey, parsed) {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(120 * 1000)
+        signal: AbortSignal.timeout(10 * 60 * 1000) // 10 minutes timeout per turn
       });
     } catch (err) {
+      log(`[AGENT-ERROR][${modelKey}] Fetch failed: ${err.message}`);
       sendSSE({ choices: [{ delta: { content: `\n[Agent Error: ${err.message}]` } }] });
       break;
     }
@@ -307,53 +318,60 @@ async function proxyAgent(req, res, modelKey, parsed) {
       break;
     }
 
-    const reader = upstream.body.getReader();
-    const decoder = new TextDecoder();
-    let sseBuffer = "";
     let toolCallAcc = {};
     let turnReasoning = "";
     let turnContent = "";
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      sseBuffer += decoder.decode(value, { stream: true });
-      const lines = sseBuffer.split("\n");
-      sseBuffer = lines.pop();
+    try {
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const raw = line.slice(6).trim();
-        if (raw === "[DONE]") continue;
-        try {
-          const chunk = JSON.parse(raw);
-          const choice = chunk.choices?.[0];
-          if (!choice) continue;
+      while (!clientDisconnected) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sseBuffer += decoder.decode(value, { stream: true });
+        const lines = sseBuffer.split("\n");
+        sseBuffer = lines.pop();
 
-          // Forward chunk to client UI
-          sendSSE(chunk);
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (raw === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(raw);
+            const choice = chunk.choices?.[0];
+            if (!choice) continue;
 
-          const delta = choice.delta || {};
-          if (delta.reasoning || delta.reasoning_content) {
-            turnReasoning += (delta.reasoning || delta.reasoning_content);
-          }
-          if (delta.content) {
-            turnContent += delta.content;
-          }
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index || 0;
-              if (!toolCallAcc[idx]) {
-                toolCallAcc[idx] = { id: tc.id || `call_${Date.now()}_${idx}`, name: "", args: "" };
-              }
-              if (tc.id) toolCallAcc[idx].id = tc.id;
-              if (tc.function?.name) toolCallAcc[idx].name += tc.function.name;
-              if (tc.function?.arguments) toolCallAcc[idx].args += tc.function.arguments;
+            sendSSE(chunk);
+
+            const delta = choice.delta || {};
+            if (delta.reasoning || delta.reasoning_content) {
+              turnReasoning += (delta.reasoning || delta.reasoning_content);
             }
-          }
-        } catch {}
+            if (delta.content) {
+              turnContent += delta.content;
+            }
+            if (delta.tool_calls) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index || 0;
+                if (!toolCallAcc[idx]) {
+                  toolCallAcc[idx] = { id: tc.id || `call_${Date.now()}_${idx}`, name: "", args: "" };
+                }
+                if (tc.id) toolCallAcc[idx].id = tc.id;
+                if (tc.function?.name) toolCallAcc[idx].name += tc.function.name;
+                if (tc.function?.arguments) toolCallAcc[idx].args += tc.function.arguments;
+              }
+            }
+          } catch {}
+        }
       }
+    } catch (readErr) {
+      log(`[AGENT-ERROR][${modelKey}] Stream reading aborted: ${readErr.message}`);
+      break;
     }
+
+    if (clientDisconnected) break;
 
     const calls = Object.values(toolCallAcc).filter(c => c.name);
     if (calls.length === 0) {
@@ -362,7 +380,6 @@ async function proxyAgent(req, res, modelKey, parsed) {
       break;
     }
 
-    // Append Assistant Message with Tool Calls
     const assistantMsg = {
       role: "assistant",
       content: turnContent || null,
@@ -375,8 +392,9 @@ async function proxyAgent(req, res, modelKey, parsed) {
     if (turnReasoning) assistantMsg.reasoning = turnReasoning;
     messages.push(assistantMsg);
 
-    // Execute each tool call in model's scope
     for (const call of calls) {
+      if (clientDisconnected) break;
+
       let parsedArgs = {};
       try {
         parsedArgs = JSON.parse(call.args);
@@ -415,8 +433,12 @@ async function proxyAgent(req, res, modelKey, parsed) {
     }
   }
 
-  res.write("data: [DONE]\n\n");
-  res.end();
+  if (!res.writableEnded) {
+    try {
+      res.write("data: [DONE]\n\n");
+      res.end();
+    } catch {}
+  }
   log(`[AGENT-COMPLETE][${modelKey}] workflow ended.`);
 }
 
