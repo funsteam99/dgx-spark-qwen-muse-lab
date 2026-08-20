@@ -100,14 +100,68 @@ function escapeHtml(s = '') {
 }
 
 function renderMarkdownToHtml(text = '') {
+  const mathBlocks = [];
+  const codeBlocks = [];
+
+  // 1. Protect code blocks first so math inside `code` or ```code``` is not extracted
+  let processed = String(text).replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
+    const placeholder = `%%CODEBLOCK${codeBlocks.length}%%`;
+    codeBlocks.push(match);
+    return placeholder;
+  });
+
+  // 2. Extract Display Math: $$ ... $$ or \[ ... \]
+  processed = processed.replace(/\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g, (match, p1, p2) => {
+    const math = p1 !== undefined ? p1 : p2;
+    const placeholder = `%%MATHDISPLAY${mathBlocks.length}%%`;
+    mathBlocks.push({ math: math.trim(), display: true });
+    return placeholder;
+  });
+
+  // 3. Extract Inline Math: $ ... $ or \( ... \)
+  processed = processed.replace(/(?<!\\)\$([^\$\n]+?)(?<!\\)\$|\\\(([\s\S]*?)\\\)/g, (match, p1, p2) => {
+    const math = p1 !== undefined ? p1 : p2;
+    if (!math.trim()) return match;
+    const placeholder = `%%MATHINLINE${mathBlocks.length}%%`;
+    mathBlocks.push({ math: math.trim(), display: false });
+    return placeholder;
+  });
+
+  // 4. Restore code blocks
+  processed = processed.replace(/%%CODEBLOCK(\d+)%%/g, (_, idx) => codeBlocks[Number(idx)]);
+
+  // 5. Parse Markdown with Marked
+  let html = '';
   if (window.marked && typeof marked.parse === 'function') {
     try {
-      return marked.parse(String(text));
+      html = marked.parse(processed);
     } catch (e) {
       console.warn('Marked parse error:', e);
+      html = renderFallbackText(processed);
     }
+  } else {
+    html = renderFallbackText(processed);
   }
-  return renderFallbackText(text);
+
+  // 6. Render Math Placeholders with KaTeX renderToString
+  html = html.replace(/%%MATH(DISPLAY|INLINE)(\d+)%%/g, (match, type, idx) => {
+    const item = mathBlocks[Number(idx)];
+    if (!item) return match;
+    if (window.katex && typeof katex.renderToString === 'function') {
+      try {
+        return katex.renderToString(item.math, {
+          displayMode: item.display,
+          throwOnError: false
+        });
+      } catch (err) {
+        console.warn('KaTeX render error:', err);
+        return item.display ? `<div class="katex-error">$$${escapeHtml(item.math)}$$</div>` : `<span class="katex-error">$${escapeHtml(item.math)}$</span>`;
+      }
+    }
+    return item.display ? `$$${escapeHtml(item.math)}$$` : `$${escapeHtml(item.math)}$`;
+  });
+
+  return html;
 }
 
 function renderFallbackText(text = '') {
@@ -140,25 +194,6 @@ function renderFallbackText(text = '') {
   closeList(); return html.join('');
 }
 
-function applyKaTeX(container) {
-  if (window.renderMathInElement) {
-    try {
-      renderMathInElement(container, {
-        delimiters: [
-          { left: "$$", right: "$$", display: true },
-          { left: "\\[", right: "\\]", display: true },
-          { left: "\\(", right: "\\)", display: false },
-          { left: "$", right: "$", display: false }
-        ],
-        throwOnError: false,
-        ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"]
-      });
-    } catch (e) {
-      console.warn('KaTeX render error:', e);
-    }
-  }
-}
-
 function applyMermaid(container) {
   if (!window.mermaid || typeof mermaid.init !== 'function') return;
   const nodes = container.querySelectorAll('.mermaid:not([data-processed="true"])');
@@ -186,8 +221,6 @@ function renderBubbleContent(bubble, answer, reasoning, isFinal = false, detecte
 
   const degenHtml = detectedRepetition ? '<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>' : '';
   bubble.innerHTML = `${degenHtml}${thinkHtml}${bodyHtml}`;
-
-  applyKaTeX(bubble);
 
   if (isFinal) {
     applyMermaid(bubble);
