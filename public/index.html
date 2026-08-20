@@ -4,22 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#e9e5db">
-  <title>Splitframe — 多模型視覺與推理實驗室</title>
-  <link rel="stylesheet" href="/vendor/katex.min.css?v=20260820_10">
-  <link rel="stylesheet" href="/styles.css?v=20260820_10">
-  <script src="/vendor/marked.min.js?v=20260820_10"></script>
-  <script src="/vendor/katex.min.js?v=20260820_10"></script>
-  <script src="/vendor/auto-render.min.js?v=20260820_10"></script>
-  <script src="/vendor/mermaid.min.js?v=20260820_10"></script>
+  <title>Splitframe — 多模型視覺、推理與 Agent 實驗室</title>
+  <link rel="stylesheet" href="/vendor/katex.min.css?v=20260820_20">
+  <link rel="stylesheet" href="/styles.css?v=20260820_20">
+  <script src="/vendor/marked.min.js?v=20260820_20"></script>
+  <script src="/vendor/katex.min.js?v=20260820_20"></script>
+  <script src="/vendor/auto-render.min.js?v=20260820_20"></script>
+  <script src="/vendor/mermaid.min.js?v=20260820_20"></script>
 </head>
 <body>
   <header class="masthead">
     <div class="brand">
       <span class="mark">S/F</span>
-      <div><strong>Splitframe</strong><small>多模型視覺與推理實驗室</small></div>
+      <div><strong>Splitframe</strong><small>多模型視覺、推理與 Agentic 實驗室</small></div>
     </div>
     <div class="sync-tools">
+      <label class="agent-toggle" title="啟用 Agent 模式：模型可調用工具、執行 Python 及自我建立 Skill"><input id="agentMode" type="checkbox" checked><span></span>🛠️ Agent 模式</label>
       <label class="sync-toggle"><input id="syncMode" type="checkbox" checked><span></span>同步送出</label>
+      <button id="openSkillsBtn" class="text-btn" title="查看已註冊的動態 Skills">🎨 Skill 技能庫 (<span id="skillBadge">0</span>)</button>
       <label class="token-limit">輸出 <select id="maxTokens" aria-label="最大輸出 tokens"><option>512</option><option>1024</option><option>2048</option><option selected>4096</option><option>8192</option></select></label>
       <button id="clearAll" class="text-btn">清空全部</button>
     </div>
@@ -29,6 +31,14 @@
       <span title="Port 8004 (Muse)"><span id="museHealth" class="dot"></span>8004</span>
     </div>
   </header>
+
+  <!-- Quick Agent Prompts Bar -->
+  <div class="quick-bar" id="quickBar">
+    <span class="quick-label">⚡ Agent 試煉題庫:</span>
+    <button class="quick-chip" data-prompt="請為自己建立一個『計算經緯度大圓距離 (calc_haversine_distance)』的 Skill，並立即使用它幫我計算 台北(25.0330, 121.5654) 到 東京(35.6762, 139.6503) 的距離（公里）？">🎯 自建 Skill：經緯度大圓距離</button>
+    <button class="quick-chip" data-prompt="請用 Python 寫一個小工具幫我計算 1 到 1000 之間所有的質數，統計一共有多少個質數並算出它們的總和是多少？">🐍 代碼執行：1~1000 質數統計</button>
+    <button class="quick-chip" data-prompt="請自定義一個解析並計算多組時間字串間隔秒數的 Skill，測試輸入：['2026-08-20 10:00:00', '2026-08-20 10:15:30', '2026-08-20 11:00:00']">⏱️ 自建 Skill：時間序列間隔計算</button>
+  </div>
 
   <main class="split">
     <!-- Left Lane (Default: Qwen 3.6) -->
@@ -45,7 +55,7 @@
             <label class="think-toggle" title="切換思考模式 (enable_thinking)"><input type="checkbox" class="think-cb"><span>🧠 思考</span></label>
           </div>
           <h1 class="model-title">Qwen 3.6</h1>
-          <p class="model-desc">原生多模態 · MTP speculative</p>
+          <p class="model-desc">原生多模態 · MTP speculative · Tool Calling</p>
         </div>
         <button class="clear-one" title="清空此對話">清空</button>
       </header>
@@ -57,14 +67,14 @@
       <div class="messages" aria-live="polite">
         <div class="empty">
           <span class="empty-icon">Q3.6</span>
-          <p class="empty-text">丟入一張圖，問它看見什麼。<br>或開啟同步，讓兩邊回答同一題。</p>
+          <p class="empty-text">支援 Agent 工具調用與動態自建 Skill。<br>或開啟同步，讓兩邊對決同一個任務。</p>
         </div>
       </div>
       <div class="composer-wrap">
         <div class="previews"></div>
         <div class="composer">
           <label class="attach" title="加入圖片"><input type="file" accept="image/*" multiple><span>＋</span></label>
-          <textarea rows="1" placeholder="問 Qwen 3.6…（可貼上或拖入圖片）"></textarea>
+          <textarea rows="1" placeholder="輸入任務指令（如：請自建 Skill 計算…）"></textarea>
           <button class="send" aria-label="送出"><span>↗</span></button>
         </div>
       </div>
@@ -86,7 +96,7 @@
             <label class="think-toggle" title="切換思考模式 (enable_thinking)"><input type="checkbox" class="think-cb" checked><span>🧠 思考</span></label>
           </div>
           <h1 class="model-title">Qwen 3.8</h1>
-          <p class="model-desc">27B NVFP4 · 視覺推理增強</p>
+          <p class="model-desc">27B NVFP4 · 視覺推理增強 · Tool Calling</p>
         </div>
         <button class="clear-one" title="清空此對話">清空</button>
       </header>
@@ -98,20 +108,35 @@
       <div class="messages" aria-live="polite">
         <div class="empty">
           <span class="empty-icon">Q3.8</span>
-          <p class="empty-text">同一張圖、同一個問題。<br>直接比較細節、推理與速度。</p>
+          <p class="empty-text">同一個 Agent 任務、同一個目標。<br>直接比較規劃能力、自建 Skill 與代碼執行。</p>
         </div>
       </div>
       <div class="composer-wrap">
         <div class="previews"></div>
         <div class="composer">
           <label class="attach" title="加入圖片"><input type="file" accept="image/*" multiple><span>＋</span></label>
-          <textarea rows="1" placeholder="問 Qwen 3.8…（可貼上或拖入圖片）"></textarea>
+          <textarea rows="1" placeholder="輸入任務指令（如：請自建 Skill 計算…）"></textarea>
           <button class="send" aria-label="送出"><span>↗</span></button>
         </div>
       </div>
     </section>
   </main>
+
+  <!-- Skill Drawer Modal -->
+  <aside id="skillDrawer" class="skill-drawer">
+    <div class="drawer-header">
+      <h3>🎨 動態 Skill 技能庫</h3>
+      <div class="drawer-actions">
+        <button id="clearSkillsBtn" class="danger-btn">清空自建 Skills</button>
+        <button id="closeDrawerBtn" class="icon-btn">✕</button>
+      </div>
+    </div>
+    <div class="drawer-content" id="drawerContent">
+      <div class="skill-list-loading">載入技能中…</div>
+    </div>
+  </aside>
+
   <div id="toast" role="status"></div>
-  <script type="module" src="/app.js?v=20260820_10"></script>
+  <script type="module" src="/app.js?v=20260820_20"></script>
 </body>
 </html>

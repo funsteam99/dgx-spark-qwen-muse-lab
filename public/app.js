@@ -2,28 +2,28 @@ const modelDefs = {
   qwen: {
     key: "qwen",
     name: "Qwen 3.6",
-    desc: "原生多模態 · MTP speculative",
+    desc: "原生多模態 · MTP speculative · Tool Calling",
     model: "nvidia/Qwen3.6-35B-A3B-NVFP4",
     context: "<b>256K</b> context",
     draft: "<b>3</b> MTP draft",
     icon: "Q3.6",
     className: "qwen",
-    placeholder: "問 Qwen 3.6…（可貼上或拖入圖片）",
-    emptyCopy: "丟入一張圖，問它看見什麼。<br>或開啟同步，讓兩邊回答同一題。",
+    placeholder: "問 Qwen 3.6…（可貼上或拖入圖片，支援 Agent 任務）",
+    emptyCopy: "支援 Agent 工具調用與動態自建 Skill。<br>或開啟同步，讓兩邊對決同一個任務。",
     defaultThinking: false,
     repetitionPenalty: 1.08
   },
   qwen38: {
     key: "qwen38",
     name: "Qwen 3.8",
-    desc: "27B NVFP4 · 視覺推理增強",
+    desc: "27B NVFP4 · 視覺推理增強 · Tool Calling",
     model: "qwen3.8",
     context: "<b>128K</b> context",
     draft: "<b>3</b> MTP draft",
     icon: "Q3.8",
     className: "qwen38",
-    placeholder: "問 Qwen 3.8…（可貼上或拖入圖片）",
-    emptyCopy: "同一張圖、同一個問題。<br>直接比較細節、推理與速度。",
+    placeholder: "問 Qwen 3.8…（可貼上或拖入圖片，支援 Agent 任務）",
+    emptyCopy: "同一個 Agent 任務、同一個目標。<br>直接比較規劃能力、自建 Skill 與代碼執行。",
     defaultThinking: true,
     repetitionPenalty: null
   },
@@ -103,14 +103,12 @@ function renderMarkdownToHtml(text = '') {
   const mathBlocks = [];
   const codeBlocks = [];
 
-  // 1. Protect code blocks first so math inside `code` or ```code``` is not extracted
   let processed = String(text).replace(/```[\s\S]*?```|`[^`\n]+`/g, (match) => {
     const placeholder = `%%CODEBLOCK${codeBlocks.length}%%`;
     codeBlocks.push(match);
     return placeholder;
   });
 
-  // 2. Extract Display Math: $$ ... $$ or \[ ... \]
   processed = processed.replace(/\$\$([\s\S]*?)\$\$|\\\[([\s\S]*?)\\\]/g, (match, p1, p2) => {
     const math = p1 !== undefined ? p1 : p2;
     const placeholder = `%%MATHDISPLAY${mathBlocks.length}%%`;
@@ -118,7 +116,6 @@ function renderMarkdownToHtml(text = '') {
     return placeholder;
   });
 
-  // 3. Extract Inline Math: $ ... $ or \( ... \)
   processed = processed.replace(/(?<!\\)\$([^\$\n]+?)(?<!\\)\$|\\\(([\s\S]*?)\\\)/g, (match, p1, p2) => {
     const math = p1 !== undefined ? p1 : p2;
     if (!math.trim()) return match;
@@ -127,10 +124,8 @@ function renderMarkdownToHtml(text = '') {
     return placeholder;
   });
 
-  // 4. Restore code blocks
   processed = processed.replace(/%%CODEBLOCK(\d+)%%/g, (_, idx) => codeBlocks[Number(idx)]);
 
-  // 5. Parse Markdown with Marked
   let html = '';
   if (window.marked && typeof marked.parse === 'function') {
     try {
@@ -143,7 +138,6 @@ function renderMarkdownToHtml(text = '') {
     html = renderFallbackText(processed);
   }
 
-  // 6. Render Math Placeholders with KaTeX renderToString
   html = html.replace(/%%MATH(DISPLAY|INLINE)(\d+)%%/g, (match, type, idx) => {
     const item = mathBlocks[Number(idx)];
     if (!item) return match;
@@ -205,22 +199,58 @@ function applyMermaid(container) {
   }
 }
 
-function renderBubbleContent(bubble, answer, reasoning, isFinal = false, detectedRepetition = false) {
+function renderBubbleContent(bubble, answer, reasoning, isFinal = false, detectedRepetition = false, agentSteps = []) {
   const thinkHtml = reasoning
     ? `<details class="thinking" ${!answer && !isFinal ? 'open' : ''}><summary>${!answer && !isFinal ? '🧠 思考中…' : '🧠 推理過程'}</summary><div class="thinking-body">${renderMarkdownToHtml(reasoning)}</div></details>`
     : '';
 
+  let stepsHtml = '';
+  if (agentSteps && agentSteps.length) {
+    stepsHtml = `<div class="agent-steps-container">` + agentSteps.map(step => {
+      if (step.type === 'tool_executing') {
+        const isSkillCreate = step.name === 'create_skill';
+        const badge = isSkillCreate ? '✨ 自建 Skill' : '🛠️ 工具調用';
+        return `
+          <div class="agent-step-card" id="step_${step.call_id}">
+            <div class="agent-step-head">
+              <span>${badge}: <code>${escapeHtml(step.name)}</code></span>
+              <span class="agent-step-badge">執行中...</span>
+            </div>
+            <div class="agent-step-body">
+              <pre><code>${escapeHtml(JSON.stringify(step.args, null, 2))}</code></pre>
+            </div>
+          </div>
+        `;
+      } else if (step.type === 'tool_result') {
+        const isSkillCreate = step.name === 'create_skill';
+        const badge = isSkillCreate ? '✨ Skill 已註冊' : '✅ 執行結果';
+        return `
+          <div class="agent-step-card done" id="res_${step.call_id}">
+            <div class="agent-step-head">
+              <span>${badge}: <code>${escapeHtml(step.name)}</code></span>
+              <span class="agent-step-badge" style="background:#27ae60">完成</span>
+            </div>
+            <div class="agent-step-body">
+              <pre><code>${escapeHtml(step.result)}</code></pre>
+            </div>
+          </div>
+        `;
+      }
+      return '';
+    }).join('') + `</div>`;
+  }
+
   let bodyHtml = '';
   if (answer) {
     bodyHtml = renderMarkdownToHtml(answer);
-  } else if (reasoning) {
-    bodyHtml = isFinal ? '<p><em>（已完成推理）</em></p>' : '';
+  } else if (reasoning || (agentSteps && agentSteps.length)) {
+    bodyHtml = isFinal ? '<p><em>（任務完成）</em></p>' : '';
   } else {
     bodyHtml = isFinal ? '<p><em>（沒有文字輸出）</em></p>' : '<p>生成中…</p>';
   }
 
   const degenHtml = detectedRepetition ? '<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>' : '';
-  bubble.innerHTML = `${degenHtml}${thinkHtml}${bodyHtml}`;
+  bubble.innerHTML = `${degenHtml}${thinkHtml}${stepsHtml}${bodyHtml}`;
 
   if (isFinal) {
     applyMermaid(bubble);
@@ -414,6 +444,8 @@ async function send(side, override = null) {
   let serverTps = null;
   let finishReason = null;
   let animFrameId = null;
+  const agentSteps = [];
+  const isAgent = $('#agentMode')?.checked;
 
   try {
     s.controller = new AbortController();
@@ -421,8 +453,9 @@ async function send(side, override = null) {
       model: def.model,
       messages: s.history,
       max_tokens: Number($('#maxTokens').value),
-      temperature: 0.7,
+      temperature: 0.2,
       stream: true,
+      agent_mode: isAgent,
       chat_template_kwargs: { enable_thinking: !!s.thinking }
     };
     if (def.repetitionPenalty) body.repetition_penalty = def.repetitionPenalty;
@@ -445,7 +478,7 @@ async function send(side, override = null) {
 
     const updateView = (isFinal = false) => {
       const cleaned = isFinal ? collapseDegenerateRepetition(answer) : { text: answer, detected: false };
-      renderBubbleContent(bubble, cleaned.text, reasoning, isFinal, cleaned.detected);
+      renderBubbleContent(bubble, cleaned.text, reasoning, isFinal, cleaned.detected, agentSteps);
       $('.messages', lane).scrollTop = $('.messages', lane).scrollHeight;
 
       const elapsed = (performance.now() - started) / 1000;
@@ -456,57 +489,52 @@ async function send(side, override = null) {
       $('.last-metric', lane).textContent = metric;
     };
 
-    const contentType = res.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) {
-      const data = await res.json();
-      const msg = data.choices?.[0]?.message || {};
-      answer = msg.content || '';
-      reasoning = msg.reasoning || msg.reasoning_content || '';
-      serverTokens = data.usage?.completion_tokens;
-      serverTps = data.timings?.predicted_per_second;
-      finishReason = data.choices?.[0]?.finish_reason;
-      updateView(true);
-    } else {
-      let renderScheduled = false;
+    let renderScheduled = false;
 
-      for await (const chunk of readSSE(res)) {
-        const choice = chunk.choices?.[0];
-        if (choice) {
-          const delta = choice.delta || {};
-          if (delta.reasoning || delta.reasoning_content) {
-            reasoning += (delta.reasoning || delta.reasoning_content);
-            tokenCount++;
-          }
-          if (delta.content) {
-            answer += delta.content;
-            tokenCount++;
-          }
-          if (choice.finish_reason) {
-            finishReason = choice.finish_reason;
-          }
-        }
-        if (chunk.usage?.completion_tokens) {
-          serverTokens = chunk.usage.completion_tokens;
-        }
-        if (chunk.timings?.predicted_per_second) {
-          serverTps = chunk.timings.predicted_per_second;
-        }
-
-        if (!renderScheduled) {
-          renderScheduled = true;
-          animFrameId = requestAnimationFrame(() => {
-            renderScheduled = false;
-            updateView(false);
-          });
+    for await (const chunk of readSSE(res)) {
+      if (chunk.agent_step) {
+        agentSteps.push(chunk.agent_step);
+        if (chunk.agent_step.skills_count !== undefined) {
+          updateSkillsBadge(chunk.agent_step.skills_count);
         }
       }
 
-      if (animFrameId) {
-        cancelAnimationFrame(animFrameId);
-        animFrameId = null;
+      const choice = chunk.choices?.[0];
+      if (choice) {
+        const delta = choice.delta || {};
+        if (delta.reasoning || delta.reasoning_content) {
+          reasoning += (delta.reasoning || delta.reasoning_content);
+          tokenCount++;
+        }
+        if (delta.content) {
+          answer += delta.content;
+          tokenCount++;
+        }
+        if (choice.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
       }
-      updateView(true);
+      if (chunk.usage?.completion_tokens) {
+        serverTokens = chunk.usage.completion_tokens;
+      }
+      if (chunk.timings?.predicted_per_second) {
+        serverTps = chunk.timings.predicted_per_second;
+      }
+
+      if (!renderScheduled) {
+        renderScheduled = true;
+        animFrameId = requestAnimationFrame(() => {
+          renderScheduled = false;
+          updateView(false);
+        });
+      }
     }
+
+    if (animFrameId) {
+      cancelAnimationFrame(animFrameId);
+      animFrameId = null;
+    }
+    updateView(true);
 
     const cleaned = collapseDegenerateRepetition(answer);
     s.history.push({ role: 'assistant', content: answer || reasoning });
@@ -517,6 +545,7 @@ async function send(side, override = null) {
     const metric = (finalTps ? `${finalTps.toFixed(1)} tok/s · ${elapsed.toFixed(1)}s` : `${finalTokens ?? '—'} tokens · ${elapsed.toFixed(1)}s`) + suffix;
     $('.last-metric', lane).textContent = metric;
     $('.meta', pending).textContent = `MODEL · ${metric}`;
+    fetchSkills(); // refresh skill drawer
   } catch (e) {
     bubble.textContent = e.name === 'AbortError' ? '已停止生成' : `錯誤：${e.message}`;
     pending.classList.add('error');
@@ -558,6 +587,76 @@ function clearSide(side) {
   $('.messages', lanes[side]).innerHTML = `<div class="empty"><span class="empty-icon">${def.icon}</span><p class="empty-text">${def.emptyCopy}</p></div>`;
   renderPreviews(side);
   $('.last-metric', lanes[side]).textContent = '尚未測試';
+}
+
+function updateSkillsBadge(count) {
+  const badge = $('#skillBadge');
+  if (badge) badge.textContent = count;
+}
+
+let currentSkillFilter = 'all';
+
+async function fetchSkills() {
+  try {
+    const res = await fetch('/api/skills');
+    const data = await res.json();
+    updateSkillsBadge(data.custom_skills?.length || 0);
+    const content = $('#drawerContent');
+    if (!content) return;
+
+    const qwenCount = data.by_model?.qwen?.length || 0;
+    const qwen38Count = data.by_model?.qwen38?.length || 0;
+    const museCount = data.by_model?.muse?.length || 0;
+
+    let html = `
+      <div class="skill-tabs">
+        <button class="tab-btn ${currentSkillFilter === 'all' ? 'active' : ''}" data-tab="all">全部 (${data.custom_skills?.length || 0})</button>
+        <button class="tab-btn ${currentSkillFilter === 'qwen' ? 'active' : ''}" data-tab="qwen">Qwen 3.6 (${qwenCount})</button>
+        <button class="tab-btn ${currentSkillFilter === 'qwen38' ? 'active' : ''}" data-tab="qwen38">Qwen 3.8 (${qwen38Count})</button>
+      </div>
+    `;
+
+    html += `<h4 style="margin-top:10px;">📦 內建基礎工具 (${data.built_in?.length || 0})</h4>`;
+    html += (data.built_in || []).map(b => `
+      <div class="skill-card">
+        <h4>🛠️ ${escapeHtml(b.name)}</h4>
+        <p>${escapeHtml(b.description)}</p>
+      </div>
+    `).join('');
+
+    let displayedSkills = data.custom_skills || [];
+    if (currentSkillFilter !== 'all') {
+      displayedSkills = (data.by_model?.[currentSkillFilter]) || [];
+    }
+
+    html += `<h4 style="margin-top:20px;">✨ 隔離動態 Skills (${displayedSkills.length})</h4>`;
+    if (!displayedSkills.length) {
+      html += `<p style="color:var(--muted);font-size:12px;">此分類下尚無模型建立的專屬 Skill。<br>下達指令後各模型將獨立建立自己的工具！</p>`;
+    } else {
+      html += displayedSkills.map(s => {
+        const modelName = s.model === 'qwen' ? 'Qwen 3.6' : s.model === 'qwen38' ? 'Qwen 3.8' : s.model;
+        const tagClass = s.model || 'qwen';
+        return `
+          <div class="skill-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <h4 style="margin:0;">🌟 ${escapeHtml(s.name)}</h4>
+              <span class="skill-model-tag tag-${tagClass}">🏷️ ${modelName} 專屬</span>
+            </div>
+            <p>${escapeHtml(s.description)}</p>
+            <pre><code>${escapeHtml(s.code)}</code></pre>
+          </div>
+        `;
+      }).join('');
+    }
+    content.innerHTML = html;
+
+    content.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.onclick = () => {
+        currentSkillFilter = btn.dataset.tab;
+        fetchSkills();
+      };
+    });
+  } catch {}
 }
 
 window.addEventListener('dragover', e => e.preventDefault());
@@ -645,6 +744,32 @@ function triggerSend(source) {
   }
 }
 
+// Quick Chip click handler
+document.querySelectorAll('.quick-chip').forEach(btn => {
+  btn.onclick = () => {
+    const p = btn.dataset.prompt;
+    $('textarea', lanes.left).value = p;
+    $('textarea', lanes.right).value = p;
+    triggerSend('left');
+  };
+});
+
+// Skill Drawer Controls
+$('#openSkillsBtn').onclick = () => {
+  fetchSkills();
+  $('#skillDrawer').classList.add('open');
+};
+$('#closeDrawerBtn').onclick = () => {
+  $('#skillDrawer').classList.remove('open');
+};
+$('#clearSkillsBtn').onclick = async () => {
+  if (confirm('確定要清空所有模型自建的 Skill 嗎？')) {
+    await fetch('/api/skills', { method: 'DELETE' });
+    toast('已清空動態 Skills');
+    fetchSkills();
+  }
+};
+
 $('#clearAll').onclick = () => Object.keys(lanes).forEach(clearSide);
 
 async function health() {
@@ -656,4 +781,5 @@ async function health() {
   } catch {}
 }
 health();
+fetchSkills();
 setInterval(health, 15000);
