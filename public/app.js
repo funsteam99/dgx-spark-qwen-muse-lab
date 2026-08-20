@@ -1,4 +1,4 @@
-﻿const modelDefs = {
+const modelDefs = {
   qwen: {
     key: "qwen",
     name: "Qwen 3.6",
@@ -10,7 +10,7 @@
     className: "qwen",
     placeholder: "問 Qwen 3.6…（可貼上或拖入圖片）",
     emptyCopy: "丟入一張圖，問它看見什麼。<br>或開啟同步，讓兩邊回答同一題。",
-    thinkingOff: true,
+    defaultThinking: false,
     repetitionPenalty: 1.08
   },
   qwen38: {
@@ -18,13 +18,13 @@
     name: "Qwen 3.8",
     desc: "27B NVFP4 · 視覺推理增強",
     model: "qwen3.8",
-    context: "<b>64K</b> context",
-    draft: "<b>NVFP4</b> flashinfer",
+    context: "<b>128K</b> context",
+    draft: "<b>3</b> MTP draft",
     icon: "Q3.8",
     className: "qwen38",
     placeholder: "問 Qwen 3.8…（可貼上或拖入圖片）",
     emptyCopy: "同一張圖、同一個問題。<br>直接比較細節、推理與速度。",
-    thinkingOff: false,
+    defaultThinking: true,
     repetitionPenalty: null
   },
   muse: {
@@ -38,14 +38,14 @@
     className: "muse",
     placeholder: "問 Muse…（可貼上或拖入圖片）",
     emptyCopy: "同一張圖、同一個問題。<br>直接比較細節、推理與速度。",
-    thinkingOff: false,
+    defaultThinking: false,
     repetitionPenalty: null
   }
 };
 
 const state = {
-  left: { modelKey: "qwen", history: [], images: [], busy: false, controller: null },
-  right: { modelKey: "qwen38", history: [], images: [], busy: false, controller: null }
+  left: { modelKey: "qwen", thinking: false, history: [], images: [], busy: false, controller: null },
+  right: { modelKey: "qwen38", thinking: true, history: [], images: [], busy: false, controller: null }
 };
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -54,8 +54,41 @@ const lanes = {
   right: $('[data-side="right"]')
 };
 
+if (window.mermaid) {
+  try {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'neutral',
+      securityLevel: 'loose',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang TC", sans-serif'
+    });
+  } catch (e) {
+    console.warn('Mermaid initialize warning:', e);
+  }
+}
+
+if (window.marked) {
+  try {
+    const customRenderer = {
+      code(arg1, arg2) {
+        const codeText = typeof arg1 === 'object' ? (arg1.text || '') : String(arg1 || '');
+        const lang = (typeof arg1 === 'object' ? (arg1.lang || '') : String(arg2 || '')).trim().toLowerCase();
+
+        if (lang === 'mermaid') {
+          return `<div class="mermaid-diagram"><div class="mermaid">${escapeHtml(codeText)}</div></div>`;
+        }
+        return `<pre><code class="language-${escapeHtml(lang)}">${escapeHtml(codeText)}</code></pre>`;
+      }
+    };
+    marked.use({ renderer: customRenderer, gfm: true, breaks: true });
+  } catch (e) {
+    console.warn('Marked configuration warning:', e);
+  }
+}
+
 function toast(text) {
   const el = $('#toast');
+  if (!el) return;
   el.textContent = text;
   el.classList.add('show');
   clearTimeout(el.t);
@@ -66,24 +99,18 @@ function escapeHtml(s = '') {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function renderInline(text = '') {
-  const tokens = [];
-  const hold = html => { tokens.push(html); return `\u0000${tokens.length - 1}\u0000`; };
-  let out = text.replace(/`([^`]+)`/g, (_, code) => hold(`<code>${escapeHtml(code)}</code>`));
-  out = out.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+"[^"]*")?\)/g, (_, label, url) => {
-    if (!/^(https?:\/\/|mailto:)/i.test(url)) return `${label} (${url})`;
-    return hold(`<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
-  });
-  out = escapeHtml(out)
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-    .replace(/~~([^~]+)~~/g, '<del>$1</del>')
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-    .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => tokens[+i]);
+function renderMarkdownToHtml(text = '') {
+  if (window.marked && typeof marked.parse === 'function') {
+    try {
+      return marked.parse(String(text));
+    } catch (e) {
+      console.warn('Marked parse error:', e);
+    }
+  }
+  return renderFallbackText(text);
 }
 
-function renderText(text = '') {
+function renderFallbackText(text = '') {
   const lines = String(text).replace(/\r/g, '').split('\n'), html = [];
   let code = false, codeLang = '', codeLines = [], list = '';
   const closeList = () => { if (list) { html.push(`</${list}>`); list = ''; } };
@@ -102,15 +129,69 @@ function renderText(text = '') {
     if (code) { codeLines.push(line); continue; }
     if (!line.trim()) { closeList(); continue; }
     const h = line.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeList(); html.push(`<h${h[1].length}>${renderInline(h[2])}</h${h[1].length}>`); continue; }
+    if (h) { closeList(); html.push(`<h${h[1].length}>${escapeHtml(h[2])}</h${h[1].length}>`); continue; }
     const ul = line.match(/^[-*]\s+(.*)$/);
-    if (ul) { if (list !== 'ul') { closeList(); html.push('<ul>'); list = 'ul'; } html.push(`<li>${renderInline(ul[1])}</li>`); continue; }
+    if (ul) { if (list !== 'ul') { closeList(); html.push('<ul>'); list = 'ul'; } html.push(`<li>${escapeHtml(ul[1])}</li>`); continue; }
     const ol = line.match(/^(\d+)\.\s+(.*)$/);
-    if (ol) { if (list !== 'ol') { closeList(); html.push('<ol>'); list = 'ol'; } html.push(`<li>${renderInline(ol[2])}</li>`); continue; }
-    closeList(); html.push(`<p>${renderInline(line)}</p>`);
+    if (ol) { if (list !== 'ol') { closeList(); html.push('<ol>'); list = 'ol'; } html.push(`<li>${escapeHtml(ol[2])}</li>`); continue; }
+    closeList(); html.push(`<p>${escapeHtml(line)}</p>`);
   }
   if (code) html.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
   closeList(); return html.join('');
+}
+
+function applyKaTeX(container) {
+  if (window.renderMathInElement) {
+    try {
+      renderMathInElement(container, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "\\[", right: "\\]", display: true },
+          { left: "\\(", right: "\\)", display: false },
+          { left: "$", right: "$", display: false }
+        ],
+        throwOnError: false,
+        ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+      });
+    } catch (e) {
+      console.warn('KaTeX render error:', e);
+    }
+  }
+}
+
+function applyMermaid(container) {
+  if (!window.mermaid || typeof mermaid.init !== 'function') return;
+  const nodes = container.querySelectorAll('.mermaid:not([data-processed="true"])');
+  if (!nodes.length) return;
+  try {
+    mermaid.init(undefined, nodes);
+  } catch (err) {
+    console.warn('Mermaid rendering error:', err);
+  }
+}
+
+function renderBubbleContent(bubble, answer, reasoning, isFinal = false, detectedRepetition = false) {
+  const thinkHtml = reasoning
+    ? `<details class="thinking" ${!answer && !isFinal ? 'open' : ''}><summary>${!answer && !isFinal ? '🧠 思考中…' : '🧠 推理過程'}</summary><div class="thinking-body">${renderMarkdownToHtml(reasoning)}</div></details>`
+    : '';
+
+  let bodyHtml = '';
+  if (answer) {
+    bodyHtml = renderMarkdownToHtml(answer);
+  } else if (reasoning) {
+    bodyHtml = isFinal ? '<p><em>（已完成推理）</em></p>' : '';
+  } else {
+    bodyHtml = isFinal ? '<p><em>（沒有文字輸出）</em></p>' : '<p>生成中…</p>';
+  }
+
+  const degenHtml = detectedRepetition ? '<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>' : '';
+  bubble.innerHTML = `${degenHtml}${thinkHtml}${bodyHtml}`;
+
+  applyKaTeX(bubble);
+
+  if (isFinal) {
+    applyMermaid(bubble);
+  }
 }
 
 function collapseDegenerateRepetition(text = '') {
@@ -218,9 +299,10 @@ function addMessage(side, role, text, images = [], reasoning = '') {
   const el = document.createElement('article');
   el.className = `message ${role}`;
   const imgs = images.length ? `<div class="message-images">${images.map(i => `<img src="${i.url}" alt="${escapeHtml(i.name || 'image')}">`).join('')}</div>` : '';
-  const think = reasoning ? `<details class="thinking"><summary>推理過程</summary>${renderText(reasoning)}</details>` : '';
-  el.innerHTML = `${imgs}<div class="bubble">${think}${renderText(text)}</div><div class="meta">${role === 'user' ? 'YOU' : 'MODEL'} · ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</div>`;
+  el.innerHTML = `${imgs}<div class="bubble"></div><div class="meta">${role === 'user' ? 'YOU' : 'MODEL'} · ${new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })}</div>`;
   box.append(el);
+  const bubble = el.querySelector('.bubble');
+  renderBubbleContent(bubble, text, reasoning, true);
   box.scrollTop = box.scrollHeight;
   return el;
 }
@@ -288,8 +370,9 @@ async function send(side, override = null) {
   addMessage(side, 'user', text || '分析這張圖片', images);
   const content = makeContent(text, images);
   s.history.push({ role: 'user', content });
-  const pending = addMessage(side, 'assistant', '思考中…');
+  const pending = addMessage(side, 'assistant', '', [], '');
   const bubble = $('.bubble', pending);
+  renderBubbleContent(bubble, '', '', false);
   const started = performance.now();
   let answer = '';
   let reasoning = '';
@@ -297,6 +380,7 @@ async function send(side, override = null) {
   let serverTokens = null;
   let serverTps = null;
   let finishReason = null;
+  let animFrameId = null;
 
   try {
     s.controller = new AbortController();
@@ -305,9 +389,9 @@ async function send(side, override = null) {
       messages: s.history,
       max_tokens: Number($('#maxTokens').value),
       temperature: 0.7,
-      stream: true
+      stream: true,
+      chat_template_kwargs: { enable_thinking: !!s.thinking }
     };
-    if (def.thinkingOff) body.chat_template_kwargs = { enable_thinking: false };
     if (def.repetitionPenalty) body.repetition_penalty = def.repetitionPenalty;
 
     const res = await fetch(`/api/${def.key}/chat`, {
@@ -326,38 +410,31 @@ async function send(side, override = null) {
       throw new Error(errMsg);
     }
 
+    const updateView = (isFinal = false) => {
+      const cleaned = isFinal ? collapseDegenerateRepetition(answer) : { text: answer, detected: false };
+      renderBubbleContent(bubble, cleaned.text, reasoning, isFinal, cleaned.detected);
+      $('.messages', lane).scrollTop = $('.messages', lane).scrollHeight;
+
+      const elapsed = (performance.now() - started) / 1000;
+      const currentTokens = serverTokens ?? tokenCount;
+      const liveTps = elapsed > 0 && currentTokens > 0 ? (currentTokens / elapsed).toFixed(1) : null;
+      const tpsStr = serverTps ? `${serverTps.toFixed(1)} tok/s` : (liveTps ? `${liveTps} tok/s` : '');
+      const metric = `${tpsStr ? `${tpsStr} · ` : ''}${elapsed.toFixed(1)}s${!isFinal ? ' (串流中)' : ''}`;
+      $('.last-metric', lane).textContent = metric;
+    };
+
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('application/json')) {
       const data = await res.json();
-      if (data.error) throw new Error(data.error.message || data.error);
       const msg = data.choices?.[0]?.message || {};
       answer = msg.content || '';
       reasoning = msg.reasoning || msg.reasoning_content || '';
       serverTokens = data.usage?.completion_tokens;
       serverTps = data.timings?.predicted_per_second;
       finishReason = data.choices?.[0]?.finish_reason;
+      updateView(true);
     } else {
       let renderScheduled = false;
-      const updateView = (isFinal = false) => {
-        const cleaned = isFinal ? collapseDegenerateRepetition(answer) : { text: answer, detected: false };
-        const thinkHtml = reasoning
-          ? `<details class="thinking" ${!answer && !isFinal ? 'open' : ''}><summary>${!answer && !isFinal ? '思考中…' : '推理過程'}</summary>${renderText(reasoning)}</details>`
-          : '';
-        const bodyHtml = cleaned.text
-          ? renderText(cleaned.text)
-          : (reasoning ? (isFinal ? '（已完成推理）' : '') : (isFinal ? '（沒有文字輸出）' : '<p>思考中…</p>'));
-        const degenHtml = cleaned.detected ? '<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>' : '';
-
-        bubble.innerHTML = `${degenHtml}${thinkHtml}${bodyHtml}`;
-        $('.messages', lane).scrollTop = $('.messages', lane).scrollHeight;
-
-        const elapsed = (performance.now() - started) / 1000;
-        const currentTokens = serverTokens ?? tokenCount;
-        const liveTps = elapsed > 0 && currentTokens > 0 ? (currentTokens / elapsed).toFixed(1) : null;
-        const tpsStr = serverTps ? `${serverTps.toFixed(1)} tok/s` : (liveTps ? `${liveTps} tok/s` : '');
-        const metric = `${tpsStr ? `${tpsStr} · ` : ''}${elapsed.toFixed(1)}s${!isFinal ? ' (串流中)' : ''}`;
-        $('.last-metric', lane).textContent = metric;
-      };
 
       for await (const chunk of readSSE(res)) {
         const choice = chunk.choices?.[0];
@@ -384,22 +461,21 @@ async function send(side, override = null) {
 
         if (!renderScheduled) {
           renderScheduled = true;
-          requestAnimationFrame(() => {
+          animFrameId = requestAnimationFrame(() => {
             renderScheduled = false;
             updateView(false);
           });
         }
       }
+
+      if (animFrameId) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
       updateView(true);
     }
 
     const cleaned = collapseDegenerateRepetition(answer);
-    const thinkHtml = reasoning ? `<details class="thinking"><summary>推理過程</summary>${renderText(reasoning)}</details>` : '';
-    const bodyHtml = renderText(cleaned.text || (reasoning ? '（已完成推理）' : '（沒有文字輸出）'));
-    const degenHtml = cleaned.detected ? '<div class="degeneration">偵測到重複退化，已折疊畫面內容</div>' : '';
-    bubble.innerHTML = `${degenHtml}${thinkHtml}${bodyHtml}`;
-    $('.messages', lane).scrollTop = $('.messages', lane).scrollHeight;
-
     s.history.push({ role: 'assistant', content: answer || reasoning });
     const elapsed = (performance.now() - started) / 1000;
     const finalTokens = serverTokens ?? (tokenCount || null);
@@ -423,7 +499,10 @@ function setLaneModel(side, modelKey) {
   const def = modelDefs[modelKey];
   if (!def) return;
   state[side].modelKey = modelKey;
+  state[side].thinking = def.defaultThinking;
   const lane = lanes[side];
+  const thinkCb = $('.think-cb', lane);
+  if (thinkCb) thinkCb.checked = def.defaultThinking;
   lane.className = `lane ${def.className}`;
   lane.dataset.model = modelKey;
   $('.model-title', lane).textContent = def.name;
@@ -462,10 +541,18 @@ window.addEventListener('drop', e => {
 Object.entries(lanes).forEach(([side, lane]) => {
   const input = $('textarea', lane), file = $('input[type=file]', lane);
   const select = $('.model-select', lane);
+  const thinkCb = $('.think-cb', lane);
+
   if (select) {
     select.onchange = () => {
       setLaneModel(side, select.value);
       clearSide(side);
+    };
+  }
+  if (thinkCb) {
+    thinkCb.onchange = () => {
+      state[side].thinking = thinkCb.checked;
+      toast(`${modelDefs[state[side].modelKey].name}：${thinkCb.checked ? '已開啟思考模式 🧠' : '已關閉思考模式（直出）'}`);
     };
   }
   file.onchange = () => { addFiles(side, file.files); file.value = ''; };

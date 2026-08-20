@@ -1,92 +1,37 @@
-# Qwen 3.6 + Muse Glimmer on NVIDIA DGX Spark
+# Splitframe — 多模型視覺與推理實驗室 (DGX Spark)
 
-A reproducible coexistence experiment and a purpose-built multimodal A/B console for two local models on one NVIDIA GB10 system.
+A high-performance multimodal and reasoning A/B testing console for local LLM / VLM models on NVIDIA DGX Spark (GB10 Superchip, 128 GB Unified Memory).
 
-![Splitframe dual-model console](docs/images/splitframe-console.png)
+---
 
-### Live synchronized comparison
+## 🚀 支援模型與架構 (Models & Endpoints)
 
-The same Chinese prompt was submitted to both models through the deployed console:
+| 模型 | 容器 / Runtime | 端口 | 特色 |
+| :--- | :--- | :--- | :--- |
+| **Qwen 3.6 (35B NVFP4)** | `qwen3.6-nvfp4` (vLLM nightly) | `Port 8002` | 256K 上下文 · 原生多模態 · MTP 推測解碼 · 深度長推理 (Long-CoT) |
+| **Qwen 3.8 (27B NVFP4)** | `qwen3.8-nvfp4` (vLLM nightly) | `Port 8006` | 128K 上下文 · 3:1 Mamba/Transformer · **3-Token MTP 投機加速 (2.29x)** · 自適應思考 (Short-CoT) |
+| **Muse Glimmer (30B GGUF)** | `muse-glimmer-8004` (llama.cpp) | `Port 8004` | 32K 上下文 · GGUF 視覺多模態 · DFlash 草稿加速 |
+| **Splitframe Web UI** | `splitframe` (Node.js Proxy + Web) | `Port 8005` | 雙欄自由切換 · 獨立思考開關 · KaTeX 公式 · Mermaid 流程圖 · GFM 表格 |
 
-![Qwen and Muse live comparison](docs/images/splitframe-live-comparison.png)
+---
 
-## What is included
+## 🎨 前端渲染與互動特性
 
-- Qwen 3.6 NVFP4 deployment with native vision and MTP speculative decoding.
-- Muse Glimmer 30B GGUF deployment with vision mmproj and DFlash.
-- GB10-specific llama.cpp CUDA build (`sm_121a`).
-- Splitframe: a responsive side-by-side chat and image comparison console.
-- Exact experiment configuration, failures, fixes, resource snapshot and measured results.
+- **雙欄自由切換 & 同步送出**：可同時將同一問題與多張圖片發送給兩端進行即時 A/B 對比。
+- **獨立思考模式開關 (🧠)**：支援動態傳遞 `enable_thinking`，自由切換推理鏈展開或秒級直出。
+- **LaTeX 數學公式排版**：內建 KaTeX，完整支援行內公式 `$E=mc^2$` 與區塊公式 `$$\int_0^\infty e^{-x^2} dx$$`。
+- **Mermaid 流程圖視覺化**：自動將 `flowchart`、`sequenceDiagram` 等圖表代碼編譯為清晰的向量 SVG。
+- **GFM 表格與代碼高亮**：完整解析 Markdown 表格、引用塊與語法高亮。
+- **完全離線自給自足**：所有前端依賴庫（KaTeX、Mermaid、Marked 與字型檔）皆打包於容器內，無外部 CDN 依賴。
 
-Read the full [experiment record](docs/EXPERIMENT.md).
+---
 
-## Architecture
-
-```text
-Browser :8005
-    │
-    ├── /api/qwen/chat ──> Qwen 3.6 / vLLM :8002
-    └── /api/muse/chat ──> Muse Glimmer / llama.cpp :8004
-```
-
-The browser never talks directly to the model servers. The small Node proxy avoids CORS problems and keeps endpoint routing in one place.
-
-## Deploy the models
-
-### Qwen 3.6
+## 🛠️ 快速啟動 (Quickstart)
 
 ```bash
-chmod +x deploy/qwen/run-coexist.sh
-./deploy/qwen/run-coexist.sh
-curl -f http://127.0.0.1:8002/health
-```
-
-The original 262K/4-sequence configuration can be restored with `deploy/qwen/restore-original.sh`.
-
-### Muse Glimmer
-
-Download the three official GGUF files listed in [EXPERIMENT.md](docs/EXPERIMENT.md) into one model directory, then:
-
-```bash
-docker build -t muse-glimmer-llamacpp:ngc2603-b10353 deploy/muse
-chmod +x deploy/muse/run.sh
-MODEL_DIR=/path/to/Muse-Glimmer-30B-GGUF ./deploy/muse/run.sh
-curl -f http://127.0.0.1:8004/health
-```
-
-## Deploy Splitframe
-
-```bash
+cd services/muse-qwen-compare
 docker build -t splitframe:latest .
-docker rm -f splitframe 2>/dev/null || true
-docker run -d \
-  --name splitframe \
-  --restart unless-stopped \
-  --network host \
-  splitframe:latest
+docker run -d --name splitframe --restart unless-stopped --network host splitframe:latest
 ```
 
-Open `http://<spark-ip>:8005`.
-
-Features include independent histories, individual or synchronized prompts, a selectable 512–8192 output-token limit (4096 default), drag/drop/paste image input, multiple-image previews, reasoning disclosure, latency/token metrics, health indicators, a mobile layout, and safe Markdown rendering for headings, emphasis, lists, quotes, code, links and tables. Browser-decodable formats such as WebP are normalized to model-compatible JPEG before transmission; JPEG and PNG remain unchanged.
-
-Qwen requests use a conservative `repetition_penalty` of 1.08. Splitframe also detects pathological consecutive repetition, folds duplicate runs in the display, and marks the response metric as `REPETITION`; ordinary output-limit truncation is marked as `LIMIT`.
-
-## Reproduce the comparison
-
-1. Confirm `/api/health` reports both models as `true`.
-2. Enable **同步送出**.
-3. Add the same image and question to either side.
-4. Submit once; Splitframe sends the same content to both models concurrently.
-5. Compare response details and the per-lane timing line.
-
-## Important notes
-
-- Model weights are not included.
-- The published numbers are a deployment validation, not a broad benchmark suite.
-- No authentication is enabled by default. Use only on a trusted LAN or add an authenticated reverse proxy.
-- NVIDIA, Qwen and Meta model licenses remain applicable to their respective artifacts.
-
-## License
-
-Splitframe code and deployment scripts are released under the [MIT License](LICENSE).
+開啟瀏覽器造訪 `http://<spark-ip>:8005/` 即可開始測試。

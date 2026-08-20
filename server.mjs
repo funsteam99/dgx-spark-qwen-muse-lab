@@ -1,4 +1,4 @@
-﻿import http from "node:http";
+import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,20 @@ const targets = {
   qwen38: "http://127.0.0.1:8006",
   muse: "http://127.0.0.1:8004",
 };
-const types = { ".html":"text/html; charset=utf-8", ".css":"text/css; charset=utf-8", ".js":"text/javascript; charset=utf-8", ".svg":"image/svg+xml" };
+const types = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".json": "application/json; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".woff": "font/woff",
+  ".ttf": "font/ttf",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg"
+};
 
 function log(msg) {
   const ts = new Date().toLocaleTimeString('zh-TW', { hour12: false });
@@ -82,21 +95,30 @@ async function proxy(req, res, model) {
   }
 }
 
-async function serve(res, pathname) {
+async function serve(req, res, pathname) {
   const requested = pathname === "/" ? "/index.html" : pathname;
   const file = normalize(join(root, requested));
   if (!file.startsWith(root)) return json(res, 403, { error: "Forbidden" });
   try {
-    if (!(await stat(file)).isFile()) throw new Error("Not a file");
+    const st = await stat(file);
+    if (!st.isFile()) throw new Error("Not a file");
+    res.writeHead(200, {
+      "content-type": types[extname(file)] || "application/octet-stream",
+      "content-length": st.size,
+      "cache-control": "public, max-age=3600"
+    });
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
     const data = await readFile(file);
-    res.writeHead(200, { "content-type": types[extname(file)] || "application/octet-stream", "cache-control":"no-store, no-cache, must-revalidate" });
     res.end(data);
   } catch { json(res, 404, { error: "Not found" }); }
 }
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
-  if (req.method === "GET" && url.pathname === "/api/health") {
+  if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/api/health") {
     const checks = await Promise.all(Object.entries(targets).map(async ([name, base]) => {
       try { return [name, (await fetch(`${base}/health`, { signal: AbortSignal.timeout(3000) })).ok]; }
       catch { return [name, false]; }
@@ -105,6 +127,6 @@ http.createServer(async (req, res) => {
   }
   const match = url.pathname.match(/^\/api\/(qwen|qwen38|muse)\/chat$/);
   if (req.method === "POST" && match) return proxy(req, res, match[1]);
-  if (req.method === "GET") return serve(res, decodeURIComponent(url.pathname));
+  if (req.method === "GET" || req.method === "HEAD") return serve(req, res, decodeURIComponent(url.pathname));
   json(res, 405, { error: "Method not allowed" });
 }).listen(port, "0.0.0.0", () => log(`Compare console listening on :${port}`));
